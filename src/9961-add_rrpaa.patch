@@ -1,0 +1,1211 @@
+--- a/drivers/net/wireless/ath/ath9k/hw.c
++++ b/drivers/net/wireless/ath/ath9k/hw.c
+@@ -467,7 +467,7 @@ static void ath9k_hw_init_defaults(struc
+ 	ah->power_mode = ATH9K_PM_UNDEFINED;
+ 	ah->htc_reset_init = true;
+ 
+-	ah->tpc_enabled = false;
++	ah->tpc_enabled = true;
+ 
+ 	ah->ani_function = ATH9K_ANI_ALL;
+ 	if (!AR_SREV_9300_20_OR_LATER(ah))
+--- a/drivers/net/wireless/ath/ath9k/xmit.c
++++ b/drivers/net/wireless/ath/ath9k/xmit.c
+@@ -1101,7 +1101,7 @@ void ath_update_max_aggr_framelen(struct
+ }
+ 
+ static u8 ath_get_rate_txpower(struct ath_softc *sc, struct ath_buf *bf,
+-			       u8 rateidx, bool is_40, bool is_cck)
++			       u8 rateidx, bool is_40, bool is_cck, struct ieee80211_tx_rate *rate)
+ {
+ 	u8 max_power;
+ 	struct sk_buff *skb;
+@@ -1160,12 +1160,7 @@ static u8 ath_get_rate_txpower(struct at
+ 		if (!max_power && !AR_SREV_9280_20_OR_LATER(ah))
+ 			max_power = 1;
+ 	} else if (!bf->bf_state.bfs_paprd) {
+-		if (rateidx < 8 && (info->flags & IEEE80211_TX_CTL_STBC))
+-			max_power = min_t(u8, ah->tx_power_stbc[rateidx],
+-					  fi->tx_power);
+-		else
+-			max_power = min_t(u8, ah->tx_power[rateidx],
+-					  fi->tx_power);
++		max_power = rate->power;
+ 	} else {
+ 		max_power = ah->paprd_training_power;
+ 	}
+@@ -1245,7 +1240,7 @@ static void ath_buf_set_rate(struct ath_
+ 				info->rates[i].RateFlags |= ATH9K_RATESERIES_STBC;
+ 
+ 			info->txpower[i] = ath_get_rate_txpower(sc, bf, rix,
+-								is_40, false);
++								is_40, false, &rates[i]);
+ 			continue;
+ 		}
+ 
+@@ -1276,7 +1271,7 @@ static void ath_buf_set_rate(struct ath_
+ 
+ 		is_cck = IS_CCK_RATE(info->rates[i].Rate);
+ 		info->txpower[i] = ath_get_rate_txpower(sc, bf, rix, false,
+-							is_cck);
++							is_cck, &rates[i]);
+ 	}
+ 
+ 	/* For AR5416 - RTS cannot be followed by a frame larger than 8K */
+--- a/net/mac80211/Kconfig
++++ b/net/mac80211/Kconfig
+@@ -18,6 +18,13 @@ if MAC80211 != n
+ config MAC80211_HAS_RC
+ 	bool
+ 
++config MAC80211_RC_RRPAA
++	bool "RRPAA" if EXPERT
++    select MAC80211_HAS_RC
++	default y
++	---help---
++	  This option enables the 'rrpaa' TX rate control algorithm
++
+ config MAC80211_RC_MINSTREL
+ 	bool "Minstrel" if EXPERT
+ 	select MAC80211_HAS_RC
+@@ -28,7 +35,7 @@ config MAC80211_RC_MINSTREL
+ config MAC80211_RC_MINSTREL_HT
+ 	bool "Minstrel 802.11n support" if EXPERT
+ 	depends on MAC80211_RC_MINSTREL
+-	default y
++	default n
+ 	---help---
+ 	  This option enables the 'minstrel_ht' TX rate control algorithm
+ 
+@@ -42,16 +49,24 @@ config MAC80211_RC_MINSTREL_VHT
+ choice
+ 	prompt "Default rate control algorithm"
+ 	depends on MAC80211_HAS_RC
+-	default MAC80211_RC_DEFAULT_MINSTREL
++	default MAC80211_RC_DEFAULT_RRPAA
+ 	---help---
+ 	  This option selects the default rate control algorithm
+ 	  mac80211 will use. Note that this default can still be
+ 	  overridden through the ieee80211_default_rc_algo module
+ 	  parameter if different algorithms are available.
+ 
++config MAC80211_RC_DEFAULT_RRPAA
++	bool "RRPAA"
++	depends on MAC80211_RC_RRPAA
++	default y
++	---help---
++	    Select RRPAA as the default rate control algorithm.
++
+ config MAC80211_RC_DEFAULT_MINSTREL
+ 	bool "Minstrel"
+ 	depends on MAC80211_RC_MINSTREL
++	default n
+ 	---help---
+ 	  Select Minstrel as the default rate control algorithm.
+ 
+@@ -60,6 +75,7 @@ endchoice
+ 
+ config MAC80211_RC_DEFAULT
+ 	string
++	default "rrpaa" if MAC80211_RC_DEFAULT_RRPAA
+ 	default "minstrel_ht" if MAC80211_RC_DEFAULT_MINSTREL && MAC80211_RC_MINSTREL_HT
+ 	default "minstrel" if MAC80211_RC_DEFAULT_MINSTREL
+ 	default ""
+@@ -91,6 +107,7 @@ config MAC80211_LEDS
+ config MAC80211_DEBUGFS
+ 	bool "Export mac80211 internals in DebugFS"
+ 	depends on MAC80211 && DEBUG_FS
++	default y
+ 	---help---
+ 	  Select this to see extensive information about
+ 	  the internal state of mac80211 in debugfs.
+@@ -135,6 +152,7 @@ config MAC80211_NOINLINE
+ config MAC80211_VERBOSE_DEBUG
+ 	bool "Verbose debugging output"
+ 	depends on MAC80211_DEBUG_MENU
++	default y
+ 	---help---
+ 	  Selecting this option causes mac80211 to print out
+ 	  many debugging messages. It should not be selected
+--- a/net/mac80211/Makefile
++++ b/net/mac80211/Makefile
+@@ -49,6 +49,9 @@ mac80211-$(CONFIG_PM) += pm.o
+ 
+ CFLAGS_trace.o := -I$(src)
+ 
++rc80211_rrpaa-y := rc80211_rrpaa.o
++rc80211_rrpaa-$(CPTCFG_MAC80211_DEBUGFS) += rc80211_rrpaa_debugfs.o
++
+ rc80211_minstrel-y := rc80211_minstrel.o
+ rc80211_minstrel-$(CPTCFG_MAC80211_DEBUGFS) += rc80211_minstrel_debugfs.o
+ 
+@@ -57,5 +60,6 @@ rc80211_minstrel_ht-$(CPTCFG_MAC80211_DE
+ 
+ mac80211-$(CPTCFG_MAC80211_RC_MINSTREL) += $(rc80211_minstrel-y)
+ mac80211-$(CPTCFG_MAC80211_RC_MINSTREL_HT) += $(rc80211_minstrel_ht-y)
++mac80211-$(CPTCFG_MAC80211_RC_RRPAA) += $(rc80211_rrpaa-y)
+ 
+ ccflags-y += -D__CHECK_ENDIAN__ -DDEBUG
+--- a/net/mac80211/main.c
++++ b/net/mac80211/main.c
+@@ -1224,6 +1224,11 @@ static int __init ieee80211_init(void)
+ 	BUILD_BUG_ON(offsetof(struct ieee80211_tx_info, driver_data) +
+ 		     IEEE80211_TX_INFO_DRIVER_DATA_SIZE > sizeof(skb->cb));
+ 
++
++    ret = rc80211_rrpaa_init();
++	if (ret)
++		return ret;
++
+ 	ret = rc80211_minstrel_init();
+ 	if (ret)
+ 		return ret;
+@@ -1249,6 +1254,7 @@ static void __exit ieee80211_exit(void)
+ {
+ 	rc80211_minstrel_ht_exit();
+ 	rc80211_minstrel_exit();
++	rc80211_rrpaa_exit();
+ 
+ 	ieee80211s_stop();
+ 
+--- a/net/mac80211/rate.c
++++ b/net/mac80211/rate.c
+@@ -669,6 +669,8 @@ static void rate_control_fill_sta_table(
+ 		} else if (ratetbl) {
+ 			rates[i].idx = ratetbl->rate[i].idx;
+ 			rates[i].flags = ratetbl->rate[i].flags;
++			rates[i].power = ratetbl->rate[i].power;
++
+ 			if (info->control.use_rts)
+ 				rates[i].count = ratetbl->rate[i].count_rts;
+ 			else if (info->control.use_cts_prot)
+--- a/net/mac80211/rate.h
++++ b/net/mac80211/rate.h
+@@ -119,6 +119,21 @@ void rate_control_deinitialize(struct ie
+ 
+ 
+ /* Rate control algorithms */
++// fixme: CPTCFG_MAC80211_RC_RRPAA flag is not set right
++#ifndef CPTCFG_MAC80211_RC_RRPAA
++int rc80211_rrpaa_init(void);
++void rc80211_rrpaa_exit(void);
++#else
++static inline int rc80211_rrpaa_init(void)
++{
++    return 0;
++}
++static inline void rc80211_rrpaa_exit(void)
++{
++}
++#endif
++
++
+ #ifdef CPTCFG_MAC80211_RC_MINSTREL
+ int rc80211_minstrel_init(void);
+ void rc80211_minstrel_exit(void);
+--- /dev/null
++++ b/net/mac80211/rc80211_rrpaa.c
+@@ -0,0 +1,621 @@
++#include <linux/netdevice.h>
++#include <linux/types.h>
++#include <linux/skbuff.h>
++#include <linux/debugfs.h>
++#include <linux/random.h>
++#include <linux/ieee80211.h>
++#include <linux/slab.h>
++#include <net/mac80211.h>
++#include "rate.h"
++#include "rc80211_rrpaa.h"
++
++/* convert mac80211 rate index to local array index */
++static inline int rix_to_ndx(struct rrpaa_sta_info *mi, int rix) {
++    unsigned int i;
++    for (i = 0; i < mi->n_rates; i++) {
++        if (mi->r[i].rix == rix) {
++            return i;
++        }
++    }
++    return -1;
++}
++
++/* convert rrpaaa local rate index to the threshold local array index */
++static inline int ndx_to_threshold_index(struct rrpaa_sta_info *mi, int rrpaa_rate_index) {
++    unsigned int i;
++    for (i = 0; i < mi->n_rates; i++) {
++        if (mi->thresholds[i].mr_idx == rrpaa_rate_index) {
++            return i;
++        }
++    }
++    return -1;
++}
++
++static void
++rrpaa_set_rate(struct rrpaa_sta_info *mi, struct ieee80211_sta_rates *ratetbl,
++                  int offset, int mr_idx, s8 power) {
++    struct rrpaa_rate *r = &mi->r[mr_idx];
++    ratetbl->rate[offset].idx = r->rix;
++    ratetbl->rate[offset].power = AVAILABLES_POWERS[power];
++
++    // FIXME 06/02/17: these values should be analyzed
++    ratetbl->rate[offset].count = 4;
++    ratetbl->rate[offset].count_cts = 4;
++    ratetbl->rate[offset].count_rts = 4;
++}
++
++static void rrpaa_update_rates(struct rrpaa_priv *mp, struct rrpaa_sta_info *mi) {
++    struct ieee80211_sta_rates *ratetbl;
++    unsigned int mr_idx;
++    s8 power, thr_iter, max_rates;
++    u8 i = 0;
++
++    ratetbl = kzalloc(sizeof(*ratetbl), GFP_ATOMIC);
++    if (!ratetbl)
++        return;
++
++    max_rates = mp->hw->max_rates > 4 ? 4 : mp->hw->max_rates;
++    thr_iter = mi->current_threshold > 0 ? mi->current_threshold : 0;
++    for (i = 0, power = mi->current_px; i < max_rates - 1; i++) {
++
++        mr_idx = mi->thresholds[thr_iter].mr_idx;
++        rrpaa_set_rate(mi, ratetbl, i, mr_idx, power);
++
++        if (power < mi->n_powers - 1) {
++            power++;
++        } else if (thr_iter > 0) {
++            thr_iter--;
++        }
++
++        mi->send_rate[i] = mr_idx; // only for debug
++        mi->send_powers[i] = ratetbl->rate[i].power;
++    }
++
++    rrpaa_set_rate(mi, ratetbl, i, mi->thresholds[0].mr_idx, mi->n_powers - 1);
++    rate_control_set_rates(mp->hw, mi->sta, ratetbl);
++
++    // only for debug
++    mi->send_rate[i] = mi->thresholds[0].mr_idx;
++    mi->send_powers[i] = ratetbl->rate[i].power;
++}
++
++/*
++* Recalculate statistics and counters of a given rate
++*/
++void register_rate_stats(struct rrpaa_rate_stats *mrs) {
++    if (unlikely(mrs->attempts > 0)) {
++        mrs->att_hist += mrs->attempts;
++        mrs->succ_hist += mrs->success;
++        mrs->ewnd_count += mrs->attempts;
++        mrs->wnd_success += mrs->success;
++        mrs->wnd_attempts += mrs->attempts;
++    }
++}
++
++unsigned int get_loss_rate(struct rrpaa_rate_stats *mrs) {
++    return MINSTREL_FRAC(mrs->wnd_attempts - mrs->wnd_success, mrs->wnd_attempts);
++}
++
++static void rrpaa_update_stats(struct rrpaa_priv *mp, struct rrpaa_sta_info *mi) {
++    struct threshold current_th;
++    struct rrpaa_rate_stats *mrs;
++    unsigned int random, loss_rate;
++    u32 * probabilityEntry;
++    u8 i, p, r;
++
++    for (i = 0; i < mi->n_rates; i++) {
++        mrs = &mi->r[i].stats;
++
++        register_rate_stats(mrs);
++
++        current_th = mi->thresholds[i];
++        if (mrs->ewnd_count < current_th.ewnd) {
++            continue;
++        }
++        if (mrs->attempts < 1) {
++            continue;
++        }
++
++        loss_rate = get_loss_rate(mrs);
++        mrs->wnd_success = 0;
++        mrs->wnd_attempts = 0;
++        if (loss_rate > current_th.mtl) {
++            probabilityEntry = &mi->priTable[i][mi->current_px];
++            *probabilityEntry = MINSTREL_FRAC(*probabilityEntry, GAMMA);
++            if (mi->priTable[i][mi->current_px] == 0) {
++                mi->priTable[i][mi->current_px] = 1;
++            }
++
++            if (mi->current_px < mi->n_powers - 1) {
++                mi->current_px++;
++
++            } else if (mi->current_threshold > 0) {
++                mi->current_threshold--;
++            }
++        }
++
++        get_random_bytes(&random, sizeof(random));
++        random %= (1 << MINSTREL_SCALE);
++        mi->random = random;
++        if (loss_rate <= current_th.ori) {
++            for (r = 0; r < mi->current_threshold; r++) {
++                mi->priTable[r][mi->current_px] = MINSTREL_TRUNC(DELTA * mi->priTable[r][mi->current_px]);
++
++                if (mi->priTable[r][mi->current_px] > (1 << MINSTREL_SCALE)) {
++                    mi->priTable[r][mi->current_px] = 1 << MINSTREL_SCALE;
++                } else if (mi->priTable[r][mi->current_px] == 0) {
++                    mi->priTable[r][mi->current_px] = 1;
++                }
++            }
++
++            if (mi->current_threshold < (mi->n_rates - 1)
++                && ((i < mi->n_rates - 1 && random < mi->priTable[i + 1][mi->current_px])
++                    || i == mi->n_rates - 1)) {
++                mi->current_threshold++;
++
++            } else if (mi->current_px > 0) {
++                for (p = mi->current_px + 1; p < mi->n_powers; p++) {
++                    mi->priTable[i][p] = MINSTREL_TRUNC(DELTA * mi->priTable[i][p]);
++
++                    if (mi->priTable[i][p] > (1 << MINSTREL_SCALE)) {
++                        mi->priTable[i][p] = 1 << MINSTREL_SCALE;
++                    } else if (mi->priTable[i][p] == 0) {
++                        mi->priTable[i][p] = 1;
++                    }
++                }
++
++                if ((mi->current_px == mi->n_powers - 1 || random < mi->priTable[i][mi->current_px + 1])) {
++                    mi->current_px--;
++                }
++            }
++        } else if (loss_rate < current_th.mtl && mi->current_px > 0) {
++            for (p = mi->current_px + 1; p < mi->n_powers; p++) {
++                mi->priTable[i][p] = MINSTREL_TRUNC(DELTA * mi->priTable[i][p]);
++
++                if (mi->priTable[i][p] > (1 << MINSTREL_SCALE)) {
++                    mi->priTable[i][p] = 1 << MINSTREL_SCALE;
++                } else if (mi->priTable[i][p] == 0) {
++                    mi->priTable[i][p] = 1;
++                }
++            }
++            if (mi->current_px == mi->n_powers - 1 || random < mi->priTable[i][mi->current_px + 1]) {
++                mi->current_px--;
++            }
++        }
++        mrs->success = 0;
++        mrs->attempts = 0;
++        mrs->ewnd_count = 0;
++    }
++
++    mi->last_stats_update = jiffies;
++    rrpaa_update_rates(mp, mi);
++}
++
++static void rrpaa_save_statistic(struct rrpaa_sta_info *mi, struct ieee80211_tx_rate tx_rate, int rrpaa_rate_index,
++                                 int attempts, int success) {
++    mi->current_time_state = (mi->current_time_state + 1) % TIME_STATE_HISTORY_COUNT;
++    if (unlikely(mi->current_time_state == mi->first_state)) {
++        mi->first_state = (mi->first_state + 1) % TIME_STATE_HISTORY_COUNT;
++    }
++    mi->states[mi->current_time_state].elapsed_time =
++            mi->last_analytics_update == 0 ? 0 : (jiffies - mi->last_analytics_update) * 1000 / HZ;
++    mi->last_analytics_update = jiffies;
++    mi->states[mi->current_time_state].current_rate = ndx_to_threshold_index(mi, rrpaa_rate_index);
++    mi->states[mi->current_time_state].current_power = tx_rate.power;
++    mi->states[mi->current_time_state].attempts = attempts;
++    mi->states[mi->current_time_state].success = success;
++}
++
++static void rrpaa_tx_status(void *priv, struct ieee80211_supported_band *sband,
++                               struct ieee80211_sta *sta, void *priv_sta,
++                               struct ieee80211_tx_info *info) {
++    struct rrpaa_priv *mp = priv;
++    struct rrpaa_sta_info *mi = priv_sta;
++    struct ieee80211_tx_rate *ar = info->status.rates;
++    int i, ndx;
++    int success, current_rate_success;
++    success = !!(info->flags & IEEE80211_TX_STAT_ACK);
++
++    for (i = 0; i < IEEE80211_TX_MAX_STATUS_RATES; i++) {
++        if (ar[i].idx < 0)
++            break;
++
++        ndx = rix_to_ndx(mi, ar[i].idx);
++        if (ndx < 0)
++            continue;
++
++        if (ar[i].count > 0) {
++            mi->r[ndx].stats.attempts += ar[i].count;
++            current_rate_success = (i != IEEE80211_TX_MAX_STATUS_RATES - 1) && (ar[i + 1].idx < 0) ? success : 0;
++            mi->r[ndx].stats.success += current_rate_success;
++#ifdef SAVE_LOG
++            rrpaa_save_statistic(mi, ar[i], ndx, ar[i].count, success);
++#endif
++        }
++    }
++
++    rrpaa_update_stats(mp, mi);
++}
++
++static void rrpaa_get_rate(void *priv, struct ieee80211_sta *sta,
++                              void *priv_sta, struct ieee80211_tx_rate_control *txrc) {
++    // this cannot be removed because it is used in the session initialization
++    rate_control_send_low(sta, priv_sta, txrc);
++}
++
++static void calc_rate_durations(enum ieee80211_band band,
++                                struct rrpaa_rate *d,
++                                struct ieee80211_rate *rate,
++                                struct cfg80211_chan_def *chandef) {
++    int erp = !!(rate->flags & IEEE80211_RATE_ERP_G);
++    int shift = ieee80211_chandef_get_shift(chandef);
++
++    d->perfect_tx_time = ieee80211_frame_duration(band, DEFAULT_FRAME_SIZE, DIV_ROUND_UP(rate->bitrate, 1 << shift),
++                                                  erp, 1, shift);
++    d->ack_time = ieee80211_frame_duration(band, 10, DIV_ROUND_UP(rate->bitrate, 1 << shift), erp, 1, shift);
++}
++
++static void threshold_init(struct rrpaa_priv *mp, struct ieee80211_sta *sta,
++                           struct ieee80211_supported_band *sband, struct rrpaa_sta_info *mi,
++                           struct cfg80211_chan_def *chandef) {
++
++    struct rrpaa_rate *mr;
++    struct rrpaa_rate *next_mr;
++    unsigned int i, j;
++    u32 rate_flags;
++    int totalTxTime, nextTotalTxTime;
++    int nextCritical = 0;
++    int nextMtl = 0;
++    int mtl = 0;
++    int ori = 0;
++
++    rate_flags = ieee80211_chandef_rate_flags(&mp->hw->conf.chandef);
++    if (!sband)
++        return;
++
++    for (i = 0, j = 0; i < mi->n_rates; i++) {
++        mr = &mi->r[i];
++
++        totalTxTime = mr->perfect_tx_time;
++
++        if (i == mi->n_rates - 1) {
++            ori = 0;
++
++        } else {
++            next_mr = &mi->r[i + 1];
++            nextTotalTxTime = next_mr->perfect_tx_time;
++
++            nextCritical = (1 << MINSTREL_SCALE) - MINSTREL_FRAC(nextTotalTxTime, totalTxTime);
++            nextMtl = MINSTREL_TRUNC(ALPHA * nextCritical);
++            ori = MINSTREL_FRAC(nextMtl, BETA);
++        }
++        if (i == 0) {
++            mtl = nextMtl;
++        }
++
++        mi->thresholds[j].mr_idx = i;
++        mi->thresholds[j].ewnd = MINSTREL_TRUNC ((TAU * 1000000) / totalTxTime);
++        mi->thresholds[j].ori = ori;
++        mi->thresholds[j].mtl = mtl;
++        j++;
++        mtl = nextMtl;
++    }
++}
++
++static int pritable_init(struct rrpaa_sta_info *mi, int max_rates, int max_powers) {
++    int r, p, i;
++    mi->priTable = kmalloc((max_rates + 1) * sizeof(u32 * ), GFP_KERNEL);
++    if (!mi->priTable) {
++        return 0;
++    }
++
++    for (r = 0; r < max_rates; r++) {
++        mi->priTable[r] = kmalloc((max_powers + 2) * sizeof(u32), GFP_KERNEL);
++        if (!mi->priTable[r]) {
++            for (i = 0; i < r; i++) {
++                kfree(mi->priTable[i]);
++            }
++            kfree(mi->priTable);
++            return 0;
++        }
++        for (p = 0; p < max_powers; p++) {
++            mi->priTable[r][p] = 1 << MINSTREL_SCALE;
++        }
++    }
++    return 1;
++}
++
++static int rrpaa_get_rate_position(int bitrate, struct ieee80211_supported_band *sband, struct ieee80211_sta *sta,
++                                      u32 rate_flags) {
++    int i;
++    int count = 0;
++    for (i = 0; i < sband->n_bitrates; i++) {
++        if (!rate_supported(sta, sband->band, i))
++            continue;
++        if ((rate_flags & sband->bitrates[i].flags) != rate_flags)
++            continue;
++
++        if (sband->bitrates[i].bitrate < bitrate)
++            count++;
++    }
++    return count;
++}
++
++static void rrpaa_rate_init(void *priv, struct ieee80211_supported_band *sband,
++                               struct cfg80211_chan_def *chandef,
++                               struct ieee80211_sta *sta, void *priv_sta) {
++    struct rrpaa_rate_stats *mrs;
++    struct rrpaa_rate *mr;
++    struct rrpaa_sta_info *mi = priv_sta;
++    struct rrpaa_priv *mp = priv;
++    struct ieee80211_rate *ctl_rate;
++    unsigned int tx_time, tx_time_single, tx_time_cts, tx_time_rtscts, cw;
++    unsigned int i, n = 0, rate_position, bitrate;
++    unsigned int t_slot = 9; /* FIXME: get real slot time */
++    u32 rate_flags;
++    int shift, skipped_rates, index;
++
++    mi->sta = sta;
++    mi->lowest_rix = rate_lowest_index(sband, sta);
++    ctl_rate = &sband->bitrates[mi->lowest_rix];
++    mi->sp_ack_dur = ieee80211_frame_duration(sband->band, 10,
++                                              ctl_rate->bitrate,
++                                              !!(ctl_rate->flags & IEEE80211_RATE_ERP_G), 1,
++                                              ieee80211_chandef_get_shift(chandef));
++
++    shift = ieee80211_chandef_get_shift(chandef);
++    rate_flags = ieee80211_chandef_rate_flags(&mp->hw->conf.chandef);
++    memset(mi->send_rate, 0, sizeof(mi->send_rate));
++
++    skipped_rates = 0;
++    for (i = 0; i < sband->n_bitrates; i++) {
++        rate_position = rrpaa_get_rate_position(sband->bitrates[i].bitrate, sband, sta, rate_flags);
++        mr = &mi->r[rate_position];
++        mrs = &mi->r[rate_position].stats;
++        tx_time = 0;
++        tx_time_cts = 0;
++        tx_time_rtscts = 0;
++        cw = mp->cw_min;
++        if (!rate_supported(sta, sband->band, i)) {
++            continue;
++        }
++        if ((rate_flags & sband->bitrates[i].flags) != rate_flags) {
++            continue;
++        }
++
++        index = rate_position;
++        mr = &mi->r[index];
++        mrs = &mi->r[index].stats;
++
++        n++;
++        memset(mr, 0, sizeof(*mr));
++        memset(mrs, 0, sizeof(*mrs));
++
++        mr->rix = i;
++        mr->bitrate = DIV_ROUND_UP(sband->bitrates[i].bitrate,
++                                   (1 << shift) * 5);
++        calc_rate_durations(sband->band, mr, &sband->bitrates[i],
++                            chandef);
++
++        mrs->retry_count = 1;
++        mr->retry_count_cts = 1;
++        mrs->retry_count_rtscts = 1;
++        mrs->wnd_attempts = 0;
++        mrs->wnd_success = 0;
++        tx_time = mr->perfect_tx_time + mi->sp_ack_dur;
++        do {
++            /* add one retransmission */
++            tx_time_single = mr->ack_time + mr->perfect_tx_time;
++
++            /* contention window */
++            tx_time_single += (t_slot * cw) >> 1;
++            cw = min((cw << 1) | 1, mp->cw_max);
++
++            tx_time += tx_time_single;
++            tx_time_cts += tx_time_single + mi->sp_ack_dur;
++            tx_time_rtscts += tx_time_single + 2 * mi->sp_ack_dur;
++            if ((tx_time_cts < mp->segment_size) &&
++                (mr->retry_count_cts < mp->max_retry))
++                mr->retry_count_cts++;
++            if ((tx_time_rtscts < mp->segment_size) &&
++                (mrs->retry_count_rtscts < mp->max_retry))
++                mrs->retry_count_rtscts++;
++        } while ((tx_time < mp->segment_size) &&
++                 (++mr->stats.retry_count < mp->max_retry));
++        mr->adjusted_retry_count = mrs->retry_count;
++        if (!(sband->bitrates[i].flags & IEEE80211_RATE_ERP_G))
++            mr->retry_count_cts = mrs->retry_count;
++    }
++
++    for (i = n; i < sband->n_bitrates; i++) {
++        struct rrpaa_rate *mr = &mi->r[i];
++        mr->rix = -1;
++    }
++
++    for (i = 0; i < n; i++) {
++        mr = &mi->r[i];
++    }
++
++
++#ifdef SAVE_LOG
++    for (i = 0; i < TIME_STATE_HISTORY_COUNT; i++) {
++        mi->states[i].elapsed_time = 0;
++    }
++    mi->first_state = 0;
++#endif
++
++    mi->n_rates = n;
++    mi->last_stats_update = jiffies;
++    mi->last_rate_update = jiffies;
++
++    rrpaa_update_rates(mp, mi);
++
++    mi->n_powers = sizeof(AVAILABLES_POWERS) / sizeof(AVAILABLES_POWERS[0]);
++    mi->current_px = mi->n_powers - 1;
++    mi->current_threshold = n - 1;
++    threshold_init(mp, sta, sband, mi, chandef);
++}
++
++static void pritable_free(struct rrpaa_sta_info *mi) {
++    u8 r;
++    for (r = 0; r < mi->max_rates; r++) {
++        kfree(mi->priTable[r]);
++    }
++    kfree(mi->priTable);
++}
++
++static void *rrpaa_alloc_sta(void *priv, struct ieee80211_sta *sta, gfp_t gfp) {
++    struct ieee80211_supported_band *sband;
++    struct rrpaa_sta_info *mi;
++    struct rrpaa_priv *mp = priv;
++    struct ieee80211_hw *hw = mp->hw;
++    int i;
++
++    mi = kzalloc(sizeof(struct rrpaa_sta_info), gfp);
++    if (!mi)
++        return NULL;
++
++    mi->max_rates = -1;
++    for (i = 0; i < IEEE80211_NUM_BANDS; i++) {
++        sband = hw->wiphy->bands[i];
++        if (sband && sband->n_bitrates > mi->max_rates)
++            mi->max_rates = sband->n_bitrates;
++    }
++
++    if (mi->max_rates == -1)
++        return NULL;
++
++    mi->r = kzalloc(sizeof(struct rrpaa_rate) * mi->max_rates, gfp);
++    if (!mi->r)
++        goto error;
++
++    mi->max_powers = sizeof(AVAILABLES_POWERS) / sizeof(AVAILABLES_POWERS[0]);
++    if (!pritable_init(mi, mi->max_rates, mi->max_powers)) {
++        goto error1;
++    }
++    mi->thresholds = kzalloc(sizeof(struct threshold) * mi->max_rates, GFP_ATOMIC);
++    if (!mi->thresholds) {
++        goto error2;
++    }
++
++    mi->last_stats_update = jiffies;
++    mi->last_rate_update = jiffies;
++
++    return mi;
++error2:
++    pritable_free(mi);
++error1:
++    kfree(mi->r);
++error:
++    kfree(mi);
++    return NULL;
++}
++
++static void rrpaa_free_sta(void *priv, struct ieee80211_sta *sta, void *priv_sta) {
++    struct rrpaa_sta_info *mi = priv_sta;
++    pritable_free(mi);
++    kfree(mi->thresholds);
++    kfree(mi->r);
++    kfree(mi);
++}
++
++static void rrpaa_init_cck_rates(struct rrpaa_priv *mp) {
++    static const int bitrates[4] = {10, 20, 55, 110};
++    struct ieee80211_supported_band *sband;
++    u32 rate_flags = ieee80211_chandef_rate_flags(&mp->hw->conf.chandef);
++    int i, j;
++
++    sband = mp->hw->wiphy->bands[IEEE80211_BAND_2GHZ];
++    if (!sband)
++        return;
++
++    for (i = 0, j = 0; i < sband->n_bitrates; i++) {
++        struct ieee80211_rate *rate = &sband->bitrates[i];
++
++        if (rate->flags & IEEE80211_RATE_ERP_G)
++            continue;
++
++        if ((rate_flags & sband->bitrates[i].flags) != rate_flags)
++            continue;
++
++        for (j = 0; j < ARRAY_SIZE(bitrates); j++) {
++            if (rate->bitrate != bitrates[j])
++                continue;
++
++            mp->cck_rates[j] = i;
++            break;
++        }
++    }
++}
++
++static void * rrpaa_alloc(struct ieee80211_hw *hw, struct dentry *debugfsdir) {
++    struct rrpaa_priv *mp;
++    mp = kzalloc(sizeof(struct rrpaa_priv), GFP_ATOMIC);
++    if (!mp)
++        return NULL;
++
++    /* contention window settings
++     * Just an approximation. Using the per-queue values would complicate
++     * the calculations and is probably unnecessary */
++    mp->cw_min = 15;
++    mp->cw_max = 1023;
++
++    /* maximum time that the hw is allowed to stay in one MRR segment */
++    mp->segment_size = 6000;
++
++    if (hw->max_rate_tries > 0)
++        mp->max_retry = hw->max_rate_tries;
++    else
++        /* safe default, does not necessarily have to match hw properties */
++        mp->max_retry = 7;
++
++    if (hw->max_rates >= 4)
++        mp->has_mrr = true;
++
++    mp->hw = hw;
++
++#ifdef CPTCFG_MAC80211_DEBUGFS
++    mp->fixed_rate_idx = (u32) -1;
++    mp->dbg_fixed_rate = debugfs_create_u32("fixed_rate_idx",
++            S_IRUGO | S_IWUGO, debugfsdir, &mp->fixed_rate_idx);
++#endif
++
++    rrpaa_init_cck_rates(mp);
++
++    return mp;
++}
++
++static void rrpaa_free(void *priv) {
++#ifdef CPTCFG_MAC80211_DEBUGFS
++    debugfs_remove(((struct rrpaa_priv *)priv)->dbg_fixed_rate);
++#endif
++    kfree(priv);
++}
++
++static u32 rrpaa_get_expected_throughput(void *priv_sta) {
++    return 0;
++}
++
++const struct rate_control_ops mac80211_rrpaa = {
++        .name = "rrpaa",
++        .tx_status_noskb = rrpaa_tx_status,
++        .get_rate = rrpaa_get_rate,
++        .rate_init = rrpaa_rate_init,
++        .alloc = rrpaa_alloc,
++        .free = rrpaa_free,
++        .alloc_sta = rrpaa_alloc_sta,
++        .free_sta = rrpaa_free_sta,
++#ifdef CPTCFG_MAC80211_DEBUGFS
++.add_sta_debugfs = rrpaa_add_sta_debugfs,
++.remove_sta_debugfs = rrpaa_remove_sta_debugfs,
++#endif
++        .get_expected_throughput = rrpaa_get_expected_throughput,
++};
++
++int __init rc80211_rrpaa_init(void) {
++    return ieee80211_rate_control_register(&mac80211_rrpaa);
++}
++
++void rc80211_rrpaa_exit(void) {
++    ieee80211_rate_control_unregister(&mac80211_rrpaa);
++}
+--- /dev/null
++++ b/net/mac80211/rc80211_rrpaa.h
+@@ -0,0 +1,164 @@
++#define SAVE_LOG
++
++#ifndef __RC_RRPAA_H
++#define __RC_RRPAA_H
++
++#define EWMA_LEVEL	96	/* ewma weighting factor [/EWMA_DIV] */
++#define EWMV_LEVEL	121
++#define EWMA_DIV	128
++
++#define SAMPLE_COLUMNS	10	/* number of columns in sample table */
++
++/* scaled fraction values */
++#define MINSTREL_SCALE  12
++#define MINSTREL_FRAC(val, div) (((val) << MINSTREL_SCALE) / div)
++#define MINSTREL_TRUNC(val) ((val) >> MINSTREL_SCALE)
++
++/* number of highest throughput rates to consider*/
++#define MAX_THR_RATES 4
++
++#define TIME_STATE_HISTORY_COUNT 150000 // debug statistics size
++
++/* time in milliseconds the wireless channel is assumed to be stable */
++#define WIFI_COHERENCE_TIME 25
++
++#define DEFAULT_FRAME_SIZE 1500
++
++#define TAU 61
++#define ALPHA 5120
++#define BETA 8192
++#define GAMMA 8192
++#define DELTA 4467
++#define DEBUG 1
++
++/* minimum number of packets between two successive sample attempts */
++#define MIN_INTERSAMPLE_SPACING 1
++
++static const s8 AVAILABLES_POWERS[] = { 0, 4, 5, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19 };
++
++struct rrpaa_rate_stats {
++	u16 attempts, wnd_attempts;
++	u16 success, wnd_success;
++
++	/* total attempts/success counters */
++	u32 att_hist, succ_hist;
++
++	/* maximum retry counts */
++	u8 retry_count;
++	u8 retry_count_rtscts;
++
++	u16 ewnd_count;
++
++	bool retry_updated;
++};
++
++struct threshold {
++	unsigned int mr_idx; // minstel rate index
++	unsigned int ori;
++	unsigned int mtl;
++	u8 ewnd;
++};
++
++struct rrpaa_rate {
++	int bitrate;
++
++	s8 rix; // hardware rate id
++	u8 retry_count_cts;
++	u8 adjusted_retry_count;
++
++	unsigned int perfect_tx_time;
++	unsigned int ack_time;
++
++	struct rrpaa_rate_stats stats;
++};
++
++struct time_state {
++	u16 attempts;
++	u16 success;
++	s8 current_power;
++	u8 current_rate;
++	u16 elapsed_time;
++};
++
++struct rrpaa_sta_info {
++	struct ieee80211_sta *sta;
++
++	unsigned long last_stats_update;
++	unsigned long last_rate_update;
++	unsigned int sp_ack_dur;
++	unsigned int rate_avg;
++
++	unsigned int lowest_rix; // index in the thresholds table
++
++	u8 cur_intersample_spacing;
++	unsigned int total_packets;
++
++	int n_rates;
++	int max_rates;
++	int n_powers;
++	int max_powers;
++
++	struct rrpaa_rate *r;
++#ifdef SAVE_LOG
++	struct time_state states[TIME_STATE_HISTORY_COUNT];
++	u16 current_time_state;
++	u16 first_state;
++#endif
++	unsigned long last_analytics_update;
++
++
++	u8 send_powers[MAX_THR_RATES];
++	u8 send_rate[MAX_THR_RATES];
++
++	u32 **priTable; // Probability table for power and rate changes, dim = n_power * n_rates
++	u8 current_px;
++
++	struct threshold *thresholds;
++	u8 current_threshold; // this is the current rate
++	unsigned int random;
++
++#ifdef CPTCFG_MAC80211_DEBUGFS
++	struct dentry *dbg_stats;
++	struct dentry *dbg_time_state;
++	struct dentry *dbg_stats_csv;
++#endif
++};
++
++struct rrpaa_priv {
++	struct ieee80211_hw *hw;
++	unsigned int cw_min;
++	unsigned int cw_max;
++	unsigned int max_retry;
++	unsigned int segment_size;
++	bool has_mrr;
++
++	u8 cck_rates[4];
++
++#ifdef CPTCFG_MAC80211_DEBUGFS
++	/*
++	 * enable fixed rate processing per RC
++	 *   - write static index to debugfs:ieee80211/phyX/rc/fixed_rate_idx
++	 *   - write -1 to enable RC processing again
++	 *   - setting will be applied on next update
++	 */
++	u32 fixed_rate_idx;
++	struct dentry *dbg_fixed_rate;
++#endif
++};
++
++struct rrpaa_debugfs_info {
++	size_t len;
++	char buf[];
++};
++
++extern const struct rate_control_ops mac80211_rrpaa;
++void rrpaa_add_sta_debugfs(void *priv, void *priv_sta, struct dentry *dir);
++void rrpaa_remove_sta_debugfs(void *priv, void *priv_sta);
++
++/* debugfs */
++int rrpaa_stats_open(struct inode *inode, struct file *file);
++int rrpaa_stats_csv_open(struct inode *inode, struct file *file);
++ssize_t rrpaa_stats_read(struct file *file, char __user *buf, size_t len, loff_t *ppos);
++int rrpaa_stats_release(struct inode *inode, struct file *file);
++
++#endif
+--- /dev/null
++++ b/net/mac80211/rc80211_rrpaa_debugfs.c
+@@ -0,0 +1,200 @@
++#include <linux/netdevice.h>
++#include <linux/types.h>
++#include <linux/skbuff.h>
++#include <linux/debugfs.h>
++#include <linux/ieee80211.h>
++#include <linux/slab.h>
++#include <linux/export.h>
++#include <net/mac80211.h>
++#include "rc80211_rrpaa.h"
++
++ssize_t rrpaa_stats_read(struct file *file, char __user *buf, size_t len, loff_t *ppos) {
++	struct rrpaa_debugfs_info *ms;
++
++	ms = file->private_data;
++	return simple_read_from_buffer(buf, len, ppos, ms->buf, ms->len);
++}
++
++int rrpaa_stats_release(struct inode *inode, struct file *file) {
++	kfree(file->private_data);
++	return 0;
++}
++
++int rrpaa_stats_open(struct inode *inode, struct file *file) {
++	struct rrpaa_sta_info *mi = inode->i_private;
++	struct rrpaa_debugfs_info *ms;
++	unsigned int i, j , k;
++	char *p;
++	int ori, mtl, ewnd, current_rate;
++
++    ms = kmalloc(2048 * 2, GFP_KERNEL);
++    if (!ms)
++		return -ENOMEM;
++
++	file->private_data = ms;
++	p = ms->buf;
++	p += sprintf(p, "\n");
++	p += sprintf(p, "pos  ___power____ bitrate idx     retry success attempts ori mtl ewnd    #success #attempts\n");
++
++	for (i = 0; i < mi->n_rates; i++) {
++		struct rrpaa_rate *mr = &mi->r[i];
++		struct rrpaa_rate_stats *mrs = &mi->r[i].stats;
++
++		*(p++) = (i == mi->send_rate[0]) ? 'A' : ' ';
++		*(p++) = (i == mi->send_rate[1]) ? 'B' : ' ';
++		*(p++) = (i == mi->send_rate[2]) ? 'C' : ' ';
++		*(p++) = (i == mi->send_rate[3]) ? 'D' : ' ';
++
++		//power
++		p += (i == mi->send_rate[0]) ? sprintf(p, "%2d-", mi->send_powers[0]) : sprintf(p, "   ");
++		p += (i == mi->send_rate[1]) ? sprintf(p, "%2d-", mi->send_powers[1]) : sprintf(p, "   ");
++		p += (i == mi->send_rate[2]) ? sprintf(p, "%2d-", mi->send_powers[2]) : sprintf(p, "   ");
++		p += (i == mi->send_rate[3]) ? sprintf(p, "%2d-", mi->send_powers[3]) : sprintf(p, "   ");
++
++		//bitrate
++		p += sprintf(p, " %3u%s   ", mr->bitrate / 2,
++					 (mr->bitrate & 1 ? ",5" : "  "));
++		p += sprintf(p, "%3u     ", mr->rix);
++
++		mtl = MINSTREL_TRUNC(mi->thresholds[i].mtl * 100);
++		ori = MINSTREL_TRUNC(mi->thresholds[i].ori * 100);
++		ewnd = mi->thresholds[i].ewnd;
++		p += sprintf(p, "%5u ", mrs->retry_count);
++		p += sprintf(p, "%7u ", mrs->success);
++		p += sprintf(p, "%8u ", mrs->attempts);
++		p += sprintf(p, "%3d ", ori);
++		p += sprintf(p, "%3d ", mtl);
++		p += sprintf(p, "%3d/%3d ", mrs->ewnd_count, ewnd);
++        p += sprintf(p, "%3d/%3d ", mrs->wnd_success, mrs->wnd_attempts);
++
++		p += sprintf(p, "  %8u ", mrs->succ_hist);
++		p += sprintf(p, "  %9u\n", mrs->att_hist);
++	}
++	p += sprintf(p, "Prob[%d][%d]: %d\n", mi->current_threshold,
++											      mi->current_px,
++												  mi->priTable[mi->current_threshold][mi->current_px]);
++	current_rate = mi->send_rate[0];
++	struct rrpaa_rate *mr = &mi->r[current_rate];
++	struct rrpaa_rate_stats *mrs = &mi->r[current_rate].stats;
++	mtl = MINSTREL_TRUNC(mi->thresholds[current_rate].mtl * 100);
++	ori = MINSTREL_TRUNC(mi->thresholds[current_rate].ori * 100);
++
++	p += sprintf(p, "Ori[%d]: %d\n", current_rate, ori);
++	p += sprintf(p, "Mtl:[%d]: %d\n", current_rate, mtl);
++	p += sprintf(p, "Random[%d]: %d\n", mi->current_threshold,
++		                                mi->random);
++
++    for (j = 0; j < mi->n_rates; j++) {
++        for (k = 0; k < mi->n_powers; k++) {
++            p += sprintf(p, "%d ", mi->priTable[j][k]);
++        }
++        p += sprintf(p,"\n", current_rate, mtl);
++    }
++
++	ms->len = p - ms->buf;
++
++	WARN_ON(ms->len + sizeof(*ms) > 2048);
++
++	return 0;
++}
++
++static const struct file_operations rrpaa_stat_fops = {
++	.owner = THIS_MODULE,
++	.open = rrpaa_stats_open,
++	.read = rrpaa_stats_read,
++	.release = rrpaa_stats_release,
++	.llseek = default_llseek,
++};
++
++int rrpaa_time_state_open(struct inode *inode, struct file *file) {
++	struct rrpaa_sta_info *mi = inode->i_private;
++	struct rrpaa_debugfs_info *ms;
++	unsigned int i;
++	char *p;
++	int loss_rate, ori, mtl, ewnd, current_rate;
++
++#ifdef SAVE_LOG
++
++	ms = kmalloc(20 * TIME_STATE_HISTORY_COUNT, GFP_KERNEL);
++	if (!ms)
++		return -ENOMEM;
++
++	file->private_data = ms;
++	p = ms->buf;
++
++	struct rrpaa_rate *mr;
++	if (mi->first_state == mi->current_time_state){
++		return;
++	}
++
++	for(i = mi->first_state + 1; i != mi->current_time_state; i = (i + 1) % TIME_STATE_HISTORY_COUNT) {
++		mr = &mi->r[mi->thresholds[mi->states[i].current_rate].mr_idx];
++
++		p += sprintf(p, " %u%s\t", mr->bitrate / 2,
++					 (mr->bitrate & 1 ? ".5" : ""));
++
++		p += sprintf(p, "%d\t%d\t%d\t%d\t",
++                     mi->states[i].current_power,
++					 mi->states[i].attempts,
++					 mi->states[i].success,
++					 mi->states[i].attempts - mi->states[i].success);
++		p += sprintf(p, "%u\t", mi->states[i].elapsed_time);
++		p += sprintf(p, "%u\n", i);
++	}
++
++
++	mi->current_time_state = 0;
++	mi->first_state = 0;
++
++	ms->len = p - ms->buf;
++	WARN_ON(ms->len + sizeof(*ms) > (20 * TIME_STATE_HISTORY_COUNT));
++
++	return 0;
++
++#else
++    return;
++#endif
++}
++
++static const struct file_operations rrpaa_time_state_fops = {
++	.owner = THIS_MODULE,
++	.open = rrpaa_time_state_open,
++	.read = rrpaa_stats_read, // todo: we should add it!!!!
++	.release = rrpaa_stats_release,
++	.llseek = default_llseek,
++};
++
++int rrpaa_stats_csv_open(struct inode *inode, struct file *file) {
++	return 0;
++}
++
++static const struct file_operations rrpaa_stat_csv_fops = {
++	.owner = THIS_MODULE,
++	.open = rrpaa_stats_csv_open,
++	.read = rrpaa_stats_read,
++	.release = rrpaa_stats_release,
++	.llseek = default_llseek,
++};
++
++void rrpaa_add_sta_debugfs(void *priv, void *priv_sta, struct dentry *dir) {
++	struct rrpaa_sta_info *mi = priv_sta;
++
++	mi->dbg_stats = debugfs_create_file("rc_stats", S_IRUGO, dir, mi,
++			&rrpaa_stat_fops);
++
++	mi->dbg_time_state = debugfs_create_file("rc_time_state", S_IRUGO, dir, mi,
++			&rrpaa_time_state_fops);
++
++	mi->dbg_stats_csv = debugfs_create_file("rc_stats_csv", S_IRUGO, dir,
++			mi, &rrpaa_stat_csv_fops);
++}
++
++void rrpaa_remove_sta_debugfs(void *priv, void *priv_sta) {
++	struct rrpaa_sta_info *mi = priv_sta;
++
++	debugfs_remove(mi->dbg_stats);
++
++	debugfs_remove(mi->dbg_time_state);
++
++	debugfs_remove(mi->dbg_stats_csv);
++}
+--- a/net/mac80211/tx.c
++++ b/net/mac80211/tx.c
+@@ -744,7 +744,8 @@ ieee80211_tx_h_rate_ctrl(struct ieee8021
+ 			struct ieee80211_tx_rate rate = {
+ 				.idx = ratetbl->rate[0].idx,
+ 				.flags = ratetbl->rate[0].flags,
+-				.count = ratetbl->rate[0].count
++				.count = ratetbl->rate[0].count,
++				.power = ratetbl->rate[0].power
+ 			};
+ 
+ 			if (ratetbl->rate[0].idx < 0)
